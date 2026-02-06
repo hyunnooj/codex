@@ -13,6 +13,9 @@ SCREEN_HEIGHT = PLAY_HEIGHT
 FPS = 60
 DROP_EVENT = pygame.USEREVENT + 1
 DROP_INTERVAL_MS = 700
+SPEEDUP_INTERVAL_MS = 180000
+SPEEDUP_FACTOR = 0.9
+MIN_DROP_INTERVAL_MS = 50
 
 SHAPES = [
     [[1, 1, 1, 1]],
@@ -90,14 +93,20 @@ class Tetris:
         return True
 
     def lock_piece(self, piece):
+        overflowed = False
         for row_index, row in enumerate(piece.shape):
             for col_index, cell in enumerate(row):
                 if cell:
                     x = piece.x + col_index
                     y = piece.y + row_index
-                    if y >= 0:
-                        self.grid[y][x] = piece.color
+                    if y < 0:
+                        overflowed = True
+                        continue
+                    self.grid[y][x] = piece.color
         self.clear_lines()
+        if overflowed or any(self.grid[0][x] for x in range(COLUMNS)):
+            self.game_over = True
+            return
         self.current_piece = self.next_piece
         self.next_piece = self.new_piece()
         if not self.valid_position(self.current_piece):
@@ -124,6 +133,8 @@ class Renderer:
         self.screen = screen
         self.font = font
         self.small_font = small_font
+        self.restart_button_rect = None
+        self.restart_button_padding = (12, 8)
 
     def draw_grid(self, grid):
         for y in range(ROWS):
@@ -168,8 +179,15 @@ class Renderer:
         if game.game_over:
             over_text = self.font.render("Game Over", True, (240, 80, 80))
             self.screen.blit(over_text, (panel_x + 20, 360))
-            restart = self.small_font.render("Press R to restart", True, TEXT_COLOR)
-            self.screen.blit(restart, (panel_x + 20, 395))
+            prompt = self.small_font.render("Restart?", True, TEXT_COLOR)
+            self.screen.blit(prompt, (panel_x + 20, 395))
+            self.restart_button_rect = self.draw_button(
+                "Restart",
+                panel_x + 20,
+                425,
+            )
+        else:
+            self.restart_button_rect = None
 
     def draw_next_piece(self, piece, start_x, start_y):
         for row_index, row in enumerate(piece.shape):
@@ -179,6 +197,25 @@ class Renderer:
                     y = start_y + row_index * CELL_SIZE
                     rect = pygame.Rect(x, y, CELL_SIZE, CELL_SIZE)
                     pygame.draw.rect(self.screen, piece.color, rect.inflate(-2, -2))
+
+    def draw_button(self, label, x, y):
+        text_surface = self.small_font.render(label, True, TEXT_COLOR)
+        text_rect = text_surface.get_rect()
+        padding_x, padding_y = self.restart_button_padding
+        button_rect = pygame.Rect(
+            x,
+            y,
+            text_rect.width + padding_x * 2,
+            text_rect.height + padding_y * 2,
+        )
+        pygame.draw.rect(self.screen, (60, 60, 70), button_rect, border_radius=4)
+        pygame.draw.rect(self.screen, (90, 90, 110), button_rect, 2, border_radius=4)
+        text_pos = (
+            x + padding_x,
+            y + padding_y,
+        )
+        self.screen.blit(text_surface, text_pos)
+        return button_rect
 
 
 class InputHandler:
@@ -221,10 +258,15 @@ class TetrisGame:
         self.game = Tetris()
         self.renderer = Renderer(self.screen, self.font, self.small_font)
         self.input_handler = InputHandler()
-        pygame.time.set_timer(DROP_EVENT, DROP_INTERVAL_MS)
+        self.drop_interval_ms = DROP_INTERVAL_MS
+        self.next_speedup_ms = SPEEDUP_INTERVAL_MS
+        pygame.time.set_timer(DROP_EVENT, self.drop_interval_ms)
 
     def reset(self):
         self.game = Tetris()
+        self.drop_interval_ms = DROP_INTERVAL_MS
+        self.next_speedup_ms = SPEEDUP_INTERVAL_MS
+        pygame.time.set_timer(DROP_EVENT, self.drop_interval_ms)
 
     def run(self):
         running = True
@@ -248,8 +290,19 @@ class TetrisGame:
                         self.game.hard_drop()
                     elif event.key == pygame.K_r and self.game.game_over:
                         self.reset()
+                elif event.type == pygame.MOUSEBUTTONDOWN and self.game.game_over:
+                    if event.button == 1 and self.renderer.restart_button_rect:
+                        if self.renderer.restart_button_rect.collidepoint(event.pos):
+                            self.reset()
 
             if not self.game.game_over:
+                if now >= self.next_speedup_ms:
+                    self.drop_interval_ms = max(
+                        MIN_DROP_INTERVAL_MS,
+                        int(self.drop_interval_ms * SPEEDUP_FACTOR),
+                    )
+                    pygame.time.set_timer(DROP_EVENT, self.drop_interval_ms)
+                    self.next_speedup_ms += SPEEDUP_INTERVAL_MS
                 pressed = pygame.key.get_pressed()
                 self.input_handler.handle_key_repeat(pressed, self.game, now)
 
